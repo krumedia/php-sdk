@@ -14,6 +14,9 @@ namespace Mcp\Capability\Registry;
 use Mcp\Exception\InvalidArgumentException;
 use Mcp\Exception\RegistryException;
 use Mcp\Server\Session\SessionInterface;
+use McpClient\Entity\ClientConfig;
+use McpServer\Primitives\AbstractClaimsAwarePrimitive;
+use McpServer\Session\SessionClaimsService;
 use Psr\Container\ContainerInterface;
 
 /**
@@ -70,6 +73,10 @@ final class ReferenceHandler implements ReferenceHandlerInterface
             [$className, $methodName] = $reference->handler;
             $reflection = new \ReflectionMethod($className, $methodName);
             $instance = $this->getClassInstance($className);
+			$claims = $session? $this->container->get(SessionClaimsService::class)->getClaims($session):null;
+			if ($claims instanceof ClientConfig && $instance instanceof AbstractClaimsAwarePrimitive) {
+				($instance)->setClaims($claims);
+			}
             $arguments = $this->prepareArguments($reflection, $arguments);
 
             return \call_user_func([$instance, $methodName], ...$arguments);
