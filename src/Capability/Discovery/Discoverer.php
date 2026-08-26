@@ -11,6 +11,7 @@
 
 namespace Mcp\Capability\Discovery;
 
+use KrumediaCommon\Localisation\TranslatorInterface;
 use Mcp\Capability\Attribute\CompletionProvider;
 use Mcp\Capability\Attribute\McpPrompt;
 use Mcp\Capability\Attribute\McpResource;
@@ -30,6 +31,8 @@ use Mcp\Schema\PromptArgument;
 use Mcp\Schema\ResourceDefinition;
 use Mcp\Schema\ResourceTemplate;
 use Mcp\Schema\Tool;
+use McpClient\Entity\ClientConfig;
+use McpServer\Attributes\McpPermissions;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
 use Symfony\Component\Finder\Finder;
@@ -53,6 +56,8 @@ final class Discoverer implements DiscovererInterface
         private readonly LoggerInterface $logger = new NullLogger(),
         private ?DocBlockParser $docBlockParser = null,
         private ?SchemaGeneratorInterface $schemaGenerator = null,
+		private readonly ?ClientConfig $clientConfig = null,
+		private readonly ?TranslatorInterface $translator = null,
     ) {
         if (!class_exists(Finder::class)) {
             throw new RuntimeException('File-based discovery requires symfony/finder. Run: composer require symfony/finder');
@@ -175,6 +180,9 @@ final class Discoverer implements DiscovererInterface
 
             if (!$processedViaClassAttribute) {
                 foreach ($reflectionClass->getMethods(\ReflectionMethod::IS_PUBLIC) as $method) {
+					if ($this->clientConfig && !$this->matchesClaims($method)) {
+						continue;
+					}
                     if (
                         $method->getDeclaringClass()->getName() !== $reflectionClass->getName()
                         || $method->isStatic() || $method->isAbstract() || $method->isConstructor() || $method->isDestructor() || '__invoke' === $method->getName()
@@ -229,6 +237,10 @@ final class Discoverer implements DiscovererInterface
                     $description = ElementMetadataResolver::resolveDescription($method, $instance->description, $this->docBlockParser);
                     $inputSchema = $this->schemaGenerator->generate($method);
                     $outputSchema = $this->schemaGenerator->generateOutputSchema($method);
+					if ($this->translator) {
+						$name = $this->translator->translate($name);
+						$description = $this->translator->translate($description);
+					}
                     $tool = new Tool(
                         name: $name,
                         title: $instance->title,
@@ -246,10 +258,15 @@ final class Discoverer implements DiscovererInterface
                 case McpResource::class:
                     $name = ElementMetadataResolver::resolveName($method, $instance->name);
                     $description = ElementMetadataResolver::resolveDescription($method, $instance->description, $this->docBlockParser);
-                    $resource = new ResourceDefinition(
+					$title = $instance->title;
+					if ($this->translator) {
+						$title = $this->translator->translate($title);
+						$description = $this->translator->translate($description);
+					}
+					$resource = new ResourceDefinition(
                         $instance->uri,
                         $name,
-                        $instance->title,
+                        $title,
                         $description,
                         $instance->mimeType,
                         $instance->annotations,
@@ -276,7 +293,12 @@ final class Discoverer implements DiscovererInterface
                         $paramTag = $paramTags['$'.$param->getName()] ?? null;
                         $arguments[] = new PromptArgument($param->getName(), $paramTag ? trim((string) $paramTag->getDescription()) : null, !$param->isOptional() && !$param->isDefaultValueAvailable());
                     }
-                    $prompt = new Prompt($name, $instance->title, $description, $arguments, $instance->icons, $instance->meta);
+					$title = $instance->title;
+					if ($this->translator) {
+						$title = $this->translator->translate($title);
+						$description = $this->translator->translate($description);
+					}
+                    $prompt = new Prompt($name, $title, $description, $arguments, $instance->icons, $instance->meta);
                     $completionProviders = $this->getCompletionProviders($method);
                     $prompts[$name] = new PromptReference($prompt, [$className, $methodName], $completionProviders);
                     ++$discoveredCount['prompts'];
@@ -288,7 +310,12 @@ final class Discoverer implements DiscovererInterface
                     $mimeType = $instance->mimeType;
                     $annotations = $instance->annotations;
                     $meta = $instance->meta ?? null;
-                    $resourceTemplate = new ResourceTemplate($instance->uriTemplate, $name, $instance->title, $description, $mimeType, $annotations, $meta);
+					$title = $instance->title;
+					if ($this->translator) {
+						$title = $this->translator->translate($title);
+						$description = $this->translator->translate($description);
+					}
+                    $resourceTemplate = new ResourceTemplate($instance->uriTemplate, $name, $title, $description, $mimeType, $annotations, $meta);
                     $completionProviders = $this->getCompletionProviders($method);
                     $resourceTemplates[$instance->uriTemplate] = new ResourceTemplateReference($resourceTemplate, [$className, $methodName], $completionProviders);
                     ++$discoveredCount['resourceTemplates'];
@@ -448,4 +475,51 @@ final class Discoverer implements DiscovererInterface
 
         return null;
     }
+
+	/**
+	 * @param \ReflectionMethod $method
+	 * @return bool
+	 */
+	private function matchesClaims(\ReflectionMethod $method): bool
+	{
+		$attrs = $method->getAttributes(McpPermissions::class);
+
+		if (empty($attrs)) {
+			return false;
+		}
+
+		/** @var McpPermissions $permissionAttrs */
+		$permissionAttrs = $attrs[0]->newInstance();
+
+		foreach (get_object_vars($permissionAttrs) as $key => $allowedValues) {
+			//skip attributes that aren't specified
+			if ($allowedValues === null) {
+				continue;
+			}
+
+			switch ($key) {
+				case 'permissions':
+					$claimValue = $this->clientConfig->getPermissions();
+					if (empty(array_intersect($allowedValues, $claimValue))) {
+						return false;
+					}
+					break;
+				case 'language':
+					$claimValue = $this->clientConfig->getLanguage()->getLanguageCode();
+					if (!in_array($claimValue, $allowedValues, false)) {
+						return false;
+					}
+					break;
+				case 'clientOrigin':
+					$claimValue = $this->clientConfig->getClientOrigin();
+					if (!in_array($claimValue, $allowedValues, false)) {
+						return false;
+					}
+					break;
+				default:
+					return false;
+			}
+		}
+		return true;
+	}
 }
