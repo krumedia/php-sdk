@@ -33,6 +33,7 @@ use Mcp\Schema\ResourceTemplate;
 use Mcp\Schema\Tool;
 use McpClient\Entity\ClientConfig;
 use McpServer\Attributes\McpPermissions;
+use OAuthServer\Service\McpAuthorizationService;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
 use Symfony\Component\Finder\Finder;
@@ -56,6 +57,7 @@ final class Discoverer implements DiscovererInterface
         private readonly LoggerInterface $logger = new NullLogger(),
         private ?DocBlockParser $docBlockParser = null,
         private ?SchemaGeneratorInterface $schemaGenerator = null,
+		private readonly ?McpAuthorizationService $mcpAuthorizationService = null,
 		private readonly ?ClientConfig $clientConfig = null,
 		private readonly ?TranslatorInterface $translator = null,
     ) {
@@ -180,7 +182,7 @@ final class Discoverer implements DiscovererInterface
 
             if (!$processedViaClassAttribute) {
                 foreach ($reflectionClass->getMethods(\ReflectionMethod::IS_PUBLIC) as $method) {
-					if ($this->clientConfig && !$this->matchesClaims($method)) {
+					if ($this->clientConfig && $this->mcpAuthorizationService && !$this->matchesClaims($method)) {
 						continue;
 					}
                     if (
@@ -499,7 +501,7 @@ final class Discoverer implements DiscovererInterface
 
 			switch ($key) {
 				case 'permissions':
-					$claimValue = $this->clientConfig->getPermissions();
+					$claimValue = $this->mcpAuthorizationService->getConfigPermissions($this->clientConfig);
 					if (empty(array_intersect($allowedValues, $claimValue))) {
 						return false;
 					}
